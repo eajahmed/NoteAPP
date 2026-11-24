@@ -1,20 +1,15 @@
-import { ObjectId } from "mongodb";
+
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
-import { getDB } from "../../../config/db.js";
+import prisma from "../../../config/prisma.js";
 import config from "../../../config/config.js";
 import { ApiError } from "../../utils/apiError.js";
 
 import type {
-  UserDocument,
   CreateUserInput,
   UpdatePasswordInput,
 } from "./user.type.js";
-
-// Get User Collection
-const getCollection = () =>
-  getDB().collection<UserDocument>("users");
 
 // Register User
 export const registerUserService = async (data: CreateUserInput) => {
@@ -50,19 +45,20 @@ export const registerUserService = async (data: CreateUserInput) => {
     throw new ApiError(400, "Please provide a valid email address");
   }
 
-// Password Validation
-const passwordRegex =/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])[A-Za-z\d\W_]{8,32}$/;
+  // Password Validation
+  const passwordRegex =
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])[A-Za-z\d\W_]{8,32}$/;
 
-if (!passwordRegex.test(password)) {
-  throw new ApiError(
-    400,
-    "Password must be 8-32 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character",
-  );
-}
+  if (!passwordRegex.test(password)) {
+    throw new ApiError(
+      400,
+      "Password must be 8-32 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character",
+    );
+  }
 
   // Check existing user
-  const userExists = await getCollection().findOne({
-    email: normalizedEmail,
+  const userExists = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
   });
 
   if (userExists) {
@@ -72,18 +68,23 @@ if (!passwordRegex.test(password)) {
   // Hash Password
   const hashedPassword = await bcrypt.hash(password, 10);
 
-  // Prepare User Data
-  const newUser: UserDocument = {
-    name: name.trim(),
-    email: normalizedEmail,
-    password: hashedPassword,
-    createdAt: new Date(),
-  };
-
-  const result = await getCollection().insertOne(newUser);
+  // Create User
+  const newUser = await prisma.user.create({
+    data: {
+      name: name.trim(),
+      email: normalizedEmail,
+      password: hashedPassword,
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      createdAt: true,
+    },
+  });
 
   return {
-    _id: result.insertedId,
+    _id: newUser.id,
     name: newUser.name,
     email: newUser.email,
     createdAt: newUser.createdAt,
@@ -108,8 +109,8 @@ export const loginUserService = async (data: {
   }
 
   // Find User
-  const user = await getCollection().findOne({
-    email: email.trim().toLowerCase(),
+  const user = await prisma.user.findUnique({
+    where: { email: email.trim().toLowerCase() },
   });
 
   if (!user) {
@@ -130,14 +131,16 @@ export const loginUserService = async (data: {
 
   // Generate Token
   const token = jwt.sign(
-    { userId: user._id.toString() },
+    { userId: user.id },
     config.JWT_SECRET,
-    { expiresIn: config.JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"] },
+    {
+      expiresIn: config.JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"],
+    },
   );
 
   return {
     user: {
-      _id: user._id,
+      _id: user.id,
       name: user.name,
       email: user.email,
       createdAt: user.createdAt,
@@ -148,18 +151,25 @@ export const loginUserService = async (data: {
 
 // Get All Users
 export const getUsersService = async () => {
-  const users = await getCollection()
-    .find({})
-    .project({
-      password: 0,
-    })
-    .toArray();
+  const users = await prisma.user.findMany({
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      createdAt: true,
+    },
+  });
 
   if (users.length === 0) {
     throw new ApiError(404, "No users found");
   }
 
-  return users;
+  return users.map((user) => ({
+    _id: user.id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
+  }));
 };
 
 // Update Password
@@ -167,10 +177,6 @@ export const updatePasswordService = async (
   userId: string,
   data: UpdatePasswordInput,
 ) => {
-  if (!ObjectId.isValid(userId)) {
-    throw new ApiError(400, "Invalid MongoDB ObjectId format");
-  }
-
   const { oldPassword, newPassword } = data;
 
   // Required field validation
@@ -184,17 +190,19 @@ export const updatePasswordService = async (
   }
 
   // New Password Validation
-  const passwordRegex =/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])[A-Za-z\d\W_]{8,32}$/;
+  const passwordRegex =
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])[A-Za-z\d\W_]{8,32}$/;
+
   if (!passwordRegex.test(newPassword)) {
-  throw new ApiError(
-    400,
-    "New password must be 8-32 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character",
-  );
-}
+    throw new ApiError(
+      400,
+      "New password must be 8-32 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character",
+    );
+  }
 
   // Find User
-  const user = await getCollection().findOne({
-    _id: new ObjectId(userId),
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
   });
 
   if (!user) {
@@ -214,14 +222,12 @@ export const updatePasswordService = async (
   // Hash New Password
   const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-  await getCollection().updateOne(
-    { _id: new ObjectId(userId) },
-    {
-      $set: {
-        password: hashedPassword,
-      },
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      password: hashedPassword,
     },
-  );
+  });
 
   return {
     message: "Password updated successfully",
@@ -230,15 +236,11 @@ export const updatePasswordService = async (
 
 // Delete User Account
 export const deleteUserService = async (userId: string) => {
-  if (!ObjectId.isValid(userId)) {
-    throw new ApiError(400, "Invalid MongoDB ObjectId format");
-  }
-
-  const result = await getCollection().deleteOne({
-    _id: new ObjectId(userId),
+  const result = await prisma.user.deleteMany({
+    where: { id: userId },
   });
 
-  if (result.deletedCount === 0) {
+  if (result.count === 0) {
     throw new ApiError(404, "User not found");
   }
 

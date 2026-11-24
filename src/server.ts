@@ -1,15 +1,16 @@
 import app from "./app.js";
 import config from "./config/config.js";
-import { connectDB } from "./config/db.js";
+import prisma from "./config/prisma.js";
 
 const port = config.port;
 
 try {
-  await connectDB();
+  await prisma.$connect();
+
   app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`);
+    console.log(`Server running on port ${port}`);
   });
 } catch (error: unknown) {
-  console.error("Startup failed:", (error as Error).message);
+  console.error("Server startup failed:", error);
   process.exit(1);
 }

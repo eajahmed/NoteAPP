@@ -1,51 +1,101 @@
-import { ObjectId } from "mongodb";
 
-import { getDB } from "../../../config/db.js";
+import prisma from "../../../config/prisma.js";
 import { ApiError } from "../../utils/apiError.js";
 
 import type {
-  NoteDocument,
   CreateNoteInput,
   UpdateNoteInput,
 } from "./note.type.js";
 
-// Get Notes Collection
-const getCollection = () => {
-  return getDB().collection<NoteDocument>("notes");
+// Validate MongoDB ObjectId
+const isValidObjectId = (id: string) => /^[a-fA-F0-9]{24}$/.test(id);
+
+// Get Current Date in Bangladesh
+const getDhakaDate = () => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Dhaka",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).formatToParts(new Date());
+
+  const day = parts.find((part) => part.type === "day")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const year = parts.find((part) => part.type === "year")?.value;
+
+  return `${year}-${month}-${day}`;
+};
+
+// Parse Note Date
+const parseNoteDate = (date?: string) => {
+  const dateString = date || getDhakaDate();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    throw new ApiError(400, "Invalid date format. Use YYYY-MM-DD");
+  }
+
+  const checkDate = new Date(`${dateString}T00:00:00Z`);
+
+  if (
+    Number.isNaN(checkDate.getTime()) ||
+    checkDate.toISOString().slice(0, 10) !== dateString
+  ) {
+    throw new ApiError(400, "Invalid date");
+  }
+
+  return new Date(`${dateString}T00:00:00+06:00`);
 };
 
 // Create Note
 export const createNoteService = async (
   userId: string,
-  data: CreateNoteInput
+  data: CreateNoteInput,
 ) => {
-  const { subject, description } = data;
+  const { subject, description, date } = data;
 
-  if (!subject || !description) {
+  if (
+    typeof subject !== "string" ||
+    !subject.trim() ||
+    typeof description !== "string" ||
+    !description.trim()
+  ) {
     throw new ApiError(400, "Subject and description are required");
   }
 
-  const newNote: NoteDocument = {
-    subject,
-    description,
-    userId: new ObjectId(userId),
-    createdAt: new Date(),
-  };
-
-  const result = await getCollection().insertOne(newNote);
-
-  return await getCollection().findOne({
-    _id: result.insertedId,
-    userId: new ObjectId(userId),
+  const newNote = await prisma.note.create({
+    data: {
+      subject: subject.trim(),
+      description: description.trim(),
+      date: parseNoteDate(date),
+      status: "PENDING",
+      userId,
+    },
   });
+
+  return newNote;
 };
 
 // Get All Notes
-export const getNotesService = async (userId: string) => {
-  const notes = await getCollection()
-    .find({ userId: new ObjectId(userId) })
-    .sort({ createdAt: -1 })
-    .toArray();
+export const getNotesService = async (
+  userId: string,
+  date?: string,
+) => {
+  const notes = await prisma.note.findMany({
+    where: {
+      userId,
+      ...(date && {
+        date: {
+          gte: parseNoteDate(date),
+          lt: new Date(
+            parseNoteDate(date).getTime() + 24 * 60 * 60 * 1000,
+          ),
+        },
+      }),
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
 
   if (notes.length === 0) {
     throw new ApiError(404, "No notes found");
@@ -57,15 +107,17 @@ export const getNotesService = async (userId: string) => {
 // Get Single Note
 export const getSingleNoteService = async (
   noteId: string,
-  userId: string
+  userId: string,
 ) => {
-  if (!ObjectId.isValid(noteId)) {
+  if (!isValidObjectId(noteId)) {
     throw new ApiError(400, "Invalid Note ID");
   }
 
-  const note = await getCollection().findOne({
-    _id: new ObjectId(noteId),
-    userId: new ObjectId(userId),
+  const note = await prisma.note.findFirst({
+    where: {
+      id: noteId,
+      userId,
+    },
   });
 
   if (!note) {
@@ -79,58 +131,94 @@ export const getSingleNoteService = async (
 export const updateNoteService = async (
   noteId: string,
   userId: string,
-  data: UpdateNoteInput
+  data: UpdateNoteInput,
 ) => {
-  if (!ObjectId.isValid(noteId)) {
+  if (!isValidObjectId(noteId)) {
     throw new ApiError(400, "Invalid Note ID");
   }
 
-  const { subject, description } = data;
+  const { subject, description, date, status } = data;
 
-  if (subject === undefined && description === undefined) {
+  if (
+    subject === undefined &&
+    description === undefined &&
+    date === undefined &&
+    status === undefined
+  ) {
     throw new ApiError(400, "At least one field is required to update");
   }
 
-  const updateData: UpdateNoteInput = {};
+  if (
+    subject !== undefined &&
+    (typeof subject !== "string" || !subject.trim())
+  ) {
+    throw new ApiError(400, "Invalid subject");
+  }
 
-  if (subject !== undefined) updateData.subject = subject;
-  if (description !== undefined) updateData.description = description;
+  if (
+    description !== undefined &&
+    (typeof description !== "string" || !description.trim())
+  ) {
+    throw new ApiError(400, "Invalid description");
+  }
 
-  const result = await getCollection().updateOne(
-    {
-      _id: new ObjectId(noteId),
-      userId: new ObjectId(userId),
+  if (
+    status !== undefined &&
+    status !== "PENDING" &&
+    status !== "COMPLETED"
+  ) {
+    throw new ApiError(400, "Invalid note status");
+  }
+
+  const updateData: {
+    subject?: string;
+    description?: string;
+    date?: Date;
+    status?: "PENDING" | "COMPLETED";
+  } = {};
+
+  if (subject !== undefined) updateData.subject = subject.trim();
+  if (description !== undefined) updateData.description = description.trim();
+  if (date !== undefined) updateData.date = parseNoteDate(date);
+  if (status !== undefined) updateData.status = status;
+
+  const result = await prisma.note.updateMany({
+    where: {
+      id: noteId,
+      userId,
     },
-    {
-      $set: updateData,
-    }
-  );
+    data: updateData,
+  });
 
-  if (result.matchedCount === 0) {
+  if (result.count === 0) {
     throw new ApiError(404, "Note not found");
   }
 
-  return await getCollection().findOne({
-    _id: new ObjectId(noteId),
-    userId: new ObjectId(userId),
+  return await prisma.note.findFirst({
+    where: {
+      id: noteId,
+      userId,
+    },
   });
 };
 
 // Delete Note
 export const deleteNoteService = async (
   noteId: string,
-  userId: string
+  userId: string,
 ) => {
-  if (!ObjectId.isValid(noteId)) {
+  if (!isValidObjectId(noteId)) {
     throw new ApiError(400, "Invalid Note ID");
   }
 
-  const result = await getCollection().deleteOne({
-    _id: new ObjectId(noteId),
-    userId: new ObjectId(userId),
+  const result = await prisma.note.deleteMany({
+    where: {
+      id: noteId,
+      userId,
+    },
   });
 
-  if (result.deletedCount === 0) {
+  if (result.count === 0) {
     throw new ApiError(404, "Note not found");
   }
 
