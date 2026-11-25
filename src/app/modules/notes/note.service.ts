@@ -10,7 +10,7 @@ import type {
 // Validate MongoDB ObjectId
 const isValidObjectId = (id: string) => /^[a-fA-F0-9]{24}$/.test(id);
 
-// Get Current Date in Bangladesh
+// Get Current Date in Bangladesh (DD-MM-YYYY)
 const getDhakaDate = () => {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Dhaka",
@@ -23,27 +23,33 @@ const getDhakaDate = () => {
   const month = parts.find((part) => part.type === "month")?.value;
   const year = parts.find((part) => part.type === "year")?.value;
 
-  return `${year}-${month}-${day}`;
+  return `${day}-${month}-${year}`;
 };
 
-// Parse Note Date
+// Parse Note Date (DD-MM-YYYY)
 const parseNoteDate = (date?: string) => {
   const dateString = date || getDhakaDate();
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
-    throw new ApiError(400, "Invalid date format. Use YYYY-MM-DD");
+  if (!/^\d{2}-\d{2}-\d{4}$/.test(dateString)) {
+    throw new ApiError(400, "Invalid date format. Use DD-MM-YYYY");
   }
 
-  const checkDate = new Date(`${dateString}T00:00:00Z`);
+  const [day, month, year] = dateString.split("-").map(Number);
 
+  const parsedDate = new Date(
+    Date.UTC(year, month - 1, day),
+  );
+
+  // Check whether the date is valid
   if (
-    Number.isNaN(checkDate.getTime()) ||
-    checkDate.toISOString().slice(0, 10) !== dateString
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
   ) {
     throw new ApiError(400, "Invalid date");
   }
 
-  return new Date(`${dateString}T00:00:00+06:00`);
+  return parsedDate;
 };
 
 // Create Note
@@ -80,14 +86,16 @@ export const getNotesService = async (
   userId: string,
   date?: string,
 ) => {
+  const selectedDate = date ? parseNoteDate(date) : undefined;
+
   const notes = await prisma.note.findMany({
     where: {
       userId,
-      ...(date && {
+      ...(selectedDate && {
         date: {
-          gte: parseNoteDate(date),
+          gte: selectedDate,
           lt: new Date(
-            parseNoteDate(date).getTime() + 24 * 60 * 60 * 1000,
+            selectedDate.getTime() + 24 * 60 * 60 * 1000,
           ),
         },
       }),

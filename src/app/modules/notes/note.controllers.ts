@@ -34,6 +34,7 @@ export const createNote = asyncHandler(async (req, res) => {
 export const getNotes = asyncHandler(async (req, res) => {
   const userId = res.locals.userId;
   const noteId = req.query.id;
+  const date = req.query.date;
 
   // Get Single Note
   if (noteId !== undefined) {
@@ -49,8 +50,13 @@ export const getNotes = asyncHandler(async (req, res) => {
     });
   }
 
-  // Get All Notes
-  const notes = await getNotesService(userId);
+  // Validate Date
+  if (date !== undefined && typeof date !== "string") {
+    throw new ApiError(400, "Invalid date");
+  }
+
+  // Get All Notes with optional Date Filter
+  const notes = await getNotesService(userId, date);
 
   return res.status(200).json({
     success: true,
